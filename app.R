@@ -9,6 +9,7 @@ library(leaflet)
 library(htmltools)
 library(scales)
 library(sf)
+library(sp)
 library(glue)
 
 data_root <- file.path(getwd(), "public", "data")
@@ -234,7 +235,7 @@ metric_palette_label <- function(metric_key) {
 }
 
 get_shape_data <- function(level) {
-  if (!level %in% c("county", "state")) {
+  if (!level %in% c("cbsa", "state")) {
     return(NULL)
   }
 
@@ -242,18 +243,112 @@ get_shape_data <- function(level) {
     return(get(level, envir = shape_cache, inherits = FALSE))
   }
 
-  shape <- if (level == "county") {
-    st_read(file.path(data_root, "topology", "us-counties-2023.json"), quiet = TRUE) %>%
-      transmute(geoid = normalize_geoid("county", GEO_ID), geometry = geometry) %>%
-      st_set_crs(4326)
+  shape <- if (level == "cbsa") {
+    readRDS(file.path(getwd(), "geometry", "msa_2023.rds")) %>%
+      mutate(geoid = normalize_geoid("cbsa", geoid))
   } else {
-    st_read(file.path(data_root, "topology", "states-10m.json"), quiet = TRUE) %>%
-      transmute(geoid = normalize_geoid("state", id), geometry = geometry) %>%
-      st_set_crs(4326)
+    readRDS(file.path(getwd(), "geometry", "states_2023.rds")) %>%
+      mutate(geoid = normalize_geoid("state", geoid))
   }
 
   assign(level, shape, envir = shape_cache)
   shape
+}
+
+geo_mode_to_level <- function(mode) {
+  if (identical(mode, "MSA")) {
+    return("cbsa")
+  }
+
+  "state"
+}
+
+load_msa_meta <- function() {
+  load_geo_meta("cbsa") %>%
+    filter(grepl("Metro Area$", name)) %>%
+    mutate(
+      short_name = sub(" Metro Area$", "", name),
+      display_name = paste0(sub(" Metro Area$", "", name), " (MSA)")
+    )
+}
+
+load_state_meta_display <- function(crosswalk) {
+  decorate_geo_meta("state", load_geo_meta("state"), crosswalk) %>%
+    mutate(short_name = name, display_name = name)
+}
+
+build_msa_state_lookup <- function(crosswalk, msa_meta) {
+  crosswalk %>%
+    filter(!is.na(cbsa_geoid), cbsa_geoid != "", county_in_cbsa) %>%
+    distinct(state_fips, state_name, state_abbreviation, cbsa_geoid) %>%
+    left_join(
+      msa_meta %>% select(geoid, short_name, display_name),
+      by = c("cbsa_geoid" = "geoid")
+    ) %>%
+    filter(!is.na(display_name)) %>%
+    mutate(state_label = paste0(state_name, " (", state_abbreviation, ")"))
+}
+
+build_percentile_legend <- function(title) {
+  tags$div(
+    class = "cgt-legend-card",
+    tags$span(class = "legend-title", title),
+    tags$div(class = "cgt-legend-bar"),
+    tags$div(
+      class = "cgt-legend-labels",
+      tags$span("0%"),
+      tags$span("100%")
+    )
+  )
+}
+
+# Work around leaflet's Shiny bounds/label helpers, which error on this geometry set.
+add_polygons_direct <- function(map, lng = NULL, lat = NULL, layerId = NULL, group = NULL,
+                                stroke = TRUE, color = "#03F", weight = 5, opacity = 0.5,
+                                fill = TRUE, fillColor = color, fillOpacity = 0.2, dashArray = NULL,
+                                smoothFactor = 1, noClip = FALSE, popup = NULL, popupOptions = NULL,
+                                label = NULL, labelOptions = NULL, options = pathOptions(),
+                                highlightOptions = NULL, data = getMapData(map)) {
+  if (missing(labelOptions)) {
+    labelOptions <- labelOptions()
+  }
+
+  options <- c(
+    options,
+    leaflet:::filterNULL(list(
+      stroke = stroke,
+      color = color,
+      weight = weight,
+      opacity = opacity,
+      fill = fill,
+      fillColor = fillColor,
+      fillOpacity = fillOpacity,
+      dashArray = dashArray,
+      smoothFactor = smoothFactor,
+      noClip = noClip
+    ))
+  )
+
+  polygons <- leaflet:::derivePolygons(data, lng, lat, missing(lng), missing(lat), "addPolygons")
+
+  if (!is.null(label)) {
+    label <- htmltools::htmlEscape(as.character(label))
+  }
+
+  leaflet:::invokeMethod(
+    map,
+    data,
+    "addPolygons",
+    polygons,
+    layerId,
+    group,
+    options,
+    popup,
+    popupOptions,
+    label,
+    labelOptions,
+    highlightOptions
+  )
 }
 
 top_entries_card <- function(title, subtitle, rows, metric_key, label_col) {
@@ -348,58 +443,44 @@ region_page <- layout_sidebar(
   fillable = FALSE,
   sidebar = sidebar(
     width = 310,
-    tags$p(class = "cgt-sidebar-intro", tags$b("Choose a geography, ranking metric, and industry filter.")),
+    HTML("<b>Choose a state, region, and ranking metric</b>"),
     selectInput(
-      "region_level",
-      label = "Geography level",
-      choices = geo_level_choices,
-      selected = "cbsa",
+      "state_selected",
+      label = "State:",
+      choices = c("Loading..." = ""),
+      selected = "",
       width = "100%"
     ),
-    selectizeInput(
-      "region_geoid",
-      label = "Geography",
-      choices = NULL,
-      width = "100%",
-      options = list(placeholder = "Choose a geography")
-    ),
+    uiOutput("msa_selected_ui"),
     selectInput(
       "region_metric",
-      label = "Rank industries by",
+      label = "Rank industries by:",
       choices = region_metric_choices,
       selected = "industry_feasibility_percentile_score",
       width = "100%"
     ),
     textInput(
       "region_industry_search",
-      label = "Filter industries",
+      label = "Filter industries:",
       placeholder = "Search by NAICS or industry name"
     ),
     checkboxInput(
       "region_underdeveloped_only",
-      label = "Prioritize underdeveloped industries only (LQ < 1)",
+      label = "Show underdeveloped industries only (LQ < 1)",
       value = TRUE
     ),
     tags$div(
       class = "cgt-sidebar-note",
-      tags$strong("Updated data, old UI shell."),
-      tags$p(
-        "This Shiny build preserves the previous interface rhythm but uses the newer public Clean Growth Tool snapshot."
-      )
+      tags$strong("MSA and State only."),
+      tags$p("This rebuild follows the old app pattern, but the public 2026 snapshot only supports state and metro-area data in this UI.")
     )
   ),
   div(
     class = "cgt-page",
-    div(
-      class = "mi_clase cgt-hero-row",
+    page_fillable(
       fluidRow(
-        column(
-          3,
-          div(
-            class = "cgt-title-block",
-            uiOutput("region_title_ui")
-          )
-        ),
+        class = "mi_clase cgt-hero-row",
+        column(3, uiOutput("title_ui")),
         column(
           3,
           value_box(
@@ -430,38 +511,31 @@ region_page <- layout_sidebar(
       )
     ),
     fluidRow(
-      column(
-        12,
-        h3(class = "cgt-section-title", "Filter and select industries to evaluate"),
-        tags$p(
-          class = "cgt-muted",
-          "The table emphasizes the older region-view workflow: identify feasible, underdeveloped, and strategically valuable industries for the selected geography."
-        )
-      )
+      column(12, h3(class = "cgt-section-title", "Filter and select industries to evaluate"))
     ),
     fluidRow(
       column(
         8,
-        reactableOutput("region_table", height = "520px"),
-        tags$p(
-          class = "cgt-footnote",
-          "The region table is built from the public 2026 snapshot. Underdeveloped mode keeps industries with a location quotient below one to stay close to the old planning workflow."
-        )
+        reactableOutput("feasibility_table", height = "520px")
       ),
       column(
         4,
         card(
           class = "cgt-card",
-          card_header("Feasibility vs Industry Complexity"),
-          plotlyOutput("region_scatter_complexity", height = "250px")
+          card_header("Feasible & Complex"),
+          plotlyOutput("scatter_complexity", height = "250px")
         ),
         br(),
         card(
           class = "cgt-card",
           card_header("Strategic Gain vs Feasibility"),
-          plotlyOutput("region_scatter_strategic", height = "250px")
+          plotlyOutput("scatter_good_jobs", height = "250px")
         )
       )
+    ),
+    tags$p(
+      class = "cgt-footnote",
+      "The table presents public-snapshot industries for the selected metro area or state. Underdeveloped mode keeps industries with a location quotient below one, preserving the older planning workflow."
     ),
     br(),
     fluidRow(
@@ -469,12 +543,7 @@ region_page <- layout_sidebar(
       column(6, uiOutput("region_top_strategic"))
     ),
     br(),
-    fluidRow(
-      column(
-        12,
-        uiOutput("region_analysis_copy")
-      )
-    )
+    uiOutput("industries_to_grow_analysis")
   )
 )
 
@@ -482,110 +551,93 @@ industry_page <- layout_sidebar(
   fillable = FALSE,
   sidebar = sidebar(
     width = 310,
-    tags$p(class = "cgt-sidebar-intro", tags$b("Choose an industry and compare geographies.")),
-    selectInput(
-      "industry_level",
-      label = "Geography level",
-      choices = geo_level_choices,
-      selected = "cbsa",
-      width = "100%"
-    ),
+    HTML("<b>Choose an industry and compare where it is most feasible to grow</b>"),
     selectizeInput(
       "industry_code",
-      label = "Industry",
+      label = "Industry:",
       choices = NULL,
       width = "100%",
       options = list(placeholder = "Choose an industry")
     ),
     selectInput(
       "industry_metric",
-      label = "Rank geographies by",
+      label = "Selection criteria:",
       choices = industry_metric_choices,
       selected = "industry_feasibility_percentile_score",
       width = "100%"
     ),
     checkboxInput(
       "industry_underdeveloped_only",
-      label = "Prioritize underdeveloped geographies only (LQ < 1)",
+      label = "Show underdeveloped regions only (LQ < 1)",
       value = TRUE
     ),
     tags$div(
       class = "cgt-sidebar-note",
-      tags$strong("Map coverage note."),
-      tags$p(
-        "The public data bundle includes geometry for states and counties. Other geography levels stay in the old map/table layout but fall back to a structured comparison panel."
-      )
+      tags$strong("Map-first layout."),
+      tags$p("The top navigation toggle switches the full US choropleth between metro areas and states, matching the older app's overall behavior.")
     )
   ),
   div(
     class = "cgt-page",
-    fluidRow(
-      column(
-        12,
-        div(class = "cgt-title-block cgt-title-block-wide", uiOutput("industry_title_ui"))
-      )
-    ),
-    fluidRow(
-      column(
-        3,
-        value_box(
-          title = "Industry Complexity",
-          value = uiOutput("industry_complexity_value"),
-          uiOutput("industry_complexity_note"),
-          class = "value-box-2 cgt-value-box"
-        )
-      ),
-      column(
-        3,
-        value_box(
-          title = "Complexity Percentile",
-          value = uiOutput("industry_complexity_pct_value"),
-          uiOutput("industry_complexity_pct_note"),
-          class = "value-box-2 cgt-value-box"
-        )
-      ),
-      column(
-        3,
-        value_box(
-          title = "National Employment Share",
-          value = uiOutput("industry_share_value"),
-          uiOutput("industry_share_note"),
-          class = "value-box-2 cgt-value-box"
-        )
-      ),
-      column(
-        3,
-        value_box(
-          title = "Ubiquity",
-          value = uiOutput("industry_ubiquity_value"),
-          uiOutput("industry_ubiquity_note"),
-          class = "value-box-3 cgt-value-box"
-        )
-      )
-    ),
-    br(),
     tabsetPanel(
       tabPanel(
         "Map",
-        fluidRow(
-          column(9, uiOutput("industry_map_ui")),
-          column(3, uiOutput("industry_map_side"))
+        div(
+          class = "cgt-map-stage",
+          leafletOutput("Maps", height = 700),
+          absolutePanel(
+            id = "controls2",
+            class = "panel panel-default cgt-overlay-panel",
+            fixed = FALSE,
+            draggable = TRUE,
+            top = 200,
+            right = "auto",
+            left = 32,
+            bottom = "auto",
+            width = 320,
+            height = "auto",
+            uiOutput("title_ui_Business")
+          ),
+          absolutePanel(
+            top = 86,
+            right = 36,
+            left = "auto",
+            width = 225,
+            fixed = FALSE,
+            uiOutput("map_legend")
+          ),
+          absolutePanel(
+            id = "controls",
+            class = "panel panel-default cgt-overlay-panel cgt-click-panel",
+            fixed = FALSE,
+            draggable = TRUE,
+            top = 160,
+            right = 36,
+            left = "auto",
+            bottom = "auto",
+            width = 280,
+            height = "auto",
+            uiOutput("ver")
+          )
+        ),
+        tags$p(
+          class = "cgt-footnote",
+          "This map shows where the selected industry is most feasible across US states or metro areas, using a percentile choropleth like the original application."
         )
       ),
       tabPanel(
         "Table",
         br(),
-        reactableOutput("industry_table", height = "700px"),
+        uiOutput("title_ui_Business_table"),
+        reactableOutput("Table_Map", height = "700px"),
         tags$p(
           class = "cgt-footnote",
-          "The table ranks geographies for the selected industry using the current public snapshot and the older comparison-first UI pattern."
+          "The table provides the same state or metro ranking behind the choropleth, using the selected metric from the current public snapshot."
         )
       )
     ),
     br(),
-    fluidRow(
-      column(12, uiOutput("industry_analysis_copy"))
-    )
+    uiOutput("Region_to_grow_analysis")
   )
 )
 
@@ -594,46 +646,35 @@ about_page <- fluidRow(
     8,
     h2("The Clean Growth Tool Website 2026"),
     tags$p(
-      "This version deliberately keeps the older Shiny experience: a dark RMI header, a left filter rail, and side-by-side comparison panels for Region View and Industry View."
+      "This version intentionally returns to the older Shiny UI pattern: a dark RMI navigation bar, a left filter rail, and a map-first Industry View."
     ),
     tags$p(
-      "The data layer, however, has been replaced with the newer public Clean Growth Tool snapshot from the RMI public repository. That means the app now supports county, state, CBSA, CSA, and commuting zone data while preserving the previous planning workflow."
+      "It uses the latest public snapshot where possible, but this old-UI rebuild is intentionally scoped to State and Metro Area views because the public 2026 data does not expose Economic Area files."
     ),
     h3("What changed"),
     tags$ul(
-      tags$li("Legacy workforce and investment panels were replaced with metrics that exist in the current public dataset: Economic Complexity Index, Industrial Diversity, Strategic Index, feasibility, and strategic gain."),
-      tags$li("Region View still prioritizes identifying feasible industries for a place, but it now ranks off the 2026 public geography files."),
-      tags$li("Industry View still compares where an industry could grow next, but it now uses the 2026 public by-industry files.")
+      tags$li("Industry View uses a full US choropleth again, with draggable summary panels modeled on the old app."),
+      tags$li("Region View uses the older state-and-city flow, adapted to current public state/MSA data."),
+      tags$li("Legacy workforce-specific panels remain out of scope because matching public 2026 datasets are not available.")
     ),
-    h3("Methodology notes"),
-    tags$p(
-      "Feasibility remains the core organizing idea. It measures how close a target industry is to the capabilities already concentrated in a geography. Strategic gain complements that view by surfacing industries that could improve a geography's long-run economic position."
-    ),
-    tags$p(
-      "Industry complexity and regional economic complexity come from the public RMI snapshot. Higher values generally indicate deeper and more sophisticated capability bases."
-    ),
-    tags$img(src = "img/feasibility_form.jpg", class = "cgt-about-image"),
-    h3("Design intent"),
-    tags$p(
-      "The goal of this rebuild is not to reproduce every historical panel. It is to preserve the stronger old interface and decision flow while replacing the underlying data contract with the most recent public snapshot."
-    ),
-    tags$img(src = "img/diagram.jpeg", class = "cgt-about-image"),
     h3("Data source"),
     tags$p(
-      "Primary source: public data snapshot from the RMI Clean Growth Tool repository, vendored locally in this project under public/data so the app does not depend on runtime GitHub requests."
-    )
+      "Primary source: public Clean Growth Tool snapshot vendored locally under public/data. Metro geometries are sourced from Census TIGER/Line boundaries and stored locally in this repository."
+    ),
+    tags$img(src = "img/feasibility_form.jpg", class = "cgt-about-image"),
+    tags$img(src = "img/diagram.jpeg", class = "cgt-about-image")
   )
 )
 
 ui <- page_navbar(
   id = "navbarID",
-  selected = "Region-View",
+  selected = "Industry-View",
   title = list(
     tags$img(src = "./img/header-logo-white.svg", width = "12px"),
     tags$img(src = "./img/rmi_horizontal_white.svg", width = "50px")
   ),
   header = tags$head(
-    tags$meta(name = "description", content = "Clean Growth Tool Website 2026 Shiny rebuild using the older interface shell and the latest public data snapshot."),
+    tags$meta(name = "description", content = "Clean Growth Tool Website 2026 Shiny rebuild using the old app UI with current public state and metro data."),
     tags$link(rel = "icon", href = "img/b_logo.png", type = "image/png"),
     tags$link(rel = "preconnect", href = "https://fonts.googleapis.com"),
     tags$link(rel = "preconnect", href = "https://fonts.gstatic.com", crossorigin = TRUE),
@@ -660,45 +701,105 @@ ui <- page_navbar(
   nav_item("View data by:", class = "custom-nav-item-2"),
   nav_panel("Industry View", value = "Industry-View", class = "custom-nav-item-4", industry_page),
   nav_panel("Region View", value = "Region-View", class = "custom-nav-item-3", region_page),
-  nav_panel("About", about_page),
   nav_spacer(),
+  nav_item(
+    radioGroupButtons(
+      inputId = "Region_select",
+      choices = c("Metro Areas" = "MSA", "State" = "STATE"),
+      selected = "MSA",
+      size = "sm",
+      justified = FALSE,
+      checkIcon = list(yes = icon("check"))
+    )
+  ),
+  nav_panel("About", about_page),
   nav_item(tags$a("Public RMI data", href = "https://github.com/bsf-rmi/RMI_Clean_Growth_Tool", target = "_blank"))
 )
 
 server <- function(input, output, session) {
   crosswalk <- load_crosswalk()
+  msa_meta <- load_msa_meta() %>% arrange(display_name)
+  state_meta <- load_state_meta_display(crosswalk) %>% arrange(display_name)
+  msa_state_lookup <- build_msa_state_lookup(crosswalk, msa_meta)
 
-  region_geo_meta <- reactive({
-    decorate_geo_meta(input$region_level, load_geo_meta(input$region_level), crosswalk) %>%
-      arrange(display_name)
+  active_level <- reactive({
+    geo_mode_to_level(if (is.null(input$Region_select)) "MSA" else input$Region_select)
   })
 
-  industry_geo_meta <- reactive({
-    decorate_geo_meta(input$industry_level, load_geo_meta(input$industry_level), crosswalk) %>%
-      arrange(display_name)
+  active_geo_meta <- reactive({
+    if (identical(input$Region_select, "MSA")) {
+      msa_meta
+    } else {
+      state_meta
+    }
   })
 
-  region_industry_meta <- reactive({
-    load_industry_meta(input$region_level) %>% arrange(industry_description)
+  active_industry_meta <- reactive({
+    load_industry_meta(active_level()) %>% arrange(industry_description)
   })
 
-  industry_meta_selected_level <- reactive({
-    load_industry_meta(input$industry_level) %>% arrange(industry_description)
-  })
-
-  observeEvent(region_geo_meta(), {
-    choices <- stats::setNames(region_geo_meta()$geoid, region_geo_meta()$display_name)
-    selected <- isolate(input$region_geoid)
-
-    if (is.null(selected) || !selected %in% region_geo_meta()$geoid) {
-      selected <- region_geo_meta()$geoid[[1]]
+  observe({
+    if (identical(input$Region_select, "MSA")) {
+      state_choices_df <- msa_state_lookup %>%
+        distinct(state_fips, state_label) %>%
+        arrange(state_label)
+      choices <- c("All states" = "ALL", stats::setNames(state_choices_df$state_fips, state_choices_df$state_label))
+      selected <- isolate(input$state_selected)
+      if (is.null(selected) || !selected %in% unname(choices)) {
+        selected <- "ALL"
+      }
+    } else {
+      choices <- stats::setNames(state_meta$geoid, state_meta$display_name)
+      selected <- isolate(input$state_selected)
+      if (is.null(selected) || !selected %in% state_meta$geoid) {
+        selected <- state_meta$geoid[[1]]
+      }
     }
 
-    updateSelectizeInput(session, "region_geoid", choices = choices, selected = selected, server = TRUE)
-  }, ignoreNULL = FALSE)
+    updateSelectInput(session, "state_selected", choices = choices, selected = selected)
+  })
 
-  observeEvent(industry_meta_selected_level(), {
-    meta <- industry_meta_selected_level()
+  available_msas <- reactive({
+    req(identical(input$Region_select, "MSA"))
+
+    if (is.null(input$state_selected) || identical(input$state_selected, "ALL")) {
+      return(msa_meta)
+    }
+
+    msa_ids <- msa_state_lookup %>%
+      filter(state_fips == input$state_selected) %>%
+      distinct(cbsa_geoid) %>%
+      pull(cbsa_geoid)
+
+    msa_meta %>%
+      filter(geoid %in% msa_ids) %>%
+      arrange(display_name)
+  })
+
+  output$msa_selected_ui <- renderUI({
+    if (!identical(input$Region_select, "MSA")) {
+      return(NULL)
+    }
+
+    choices_df <- available_msas()
+    req(nrow(choices_df) > 0)
+    selected <- isolate(input$msa_selected)
+    if (is.null(selected) || !selected %in% choices_df$geoid) {
+      selected <- choices_df$geoid[[1]]
+    }
+
+    selectizeInput(
+      "msa_selected",
+      label = "Metro Area:",
+      choices = stats::setNames(choices_df$geoid, choices_df$display_name),
+      selected = selected,
+      width = "100%",
+      options = list(placeholder = "Choose a metro area")
+    )
+  })
+
+  observeEvent(active_industry_meta(), {
+    meta <- active_industry_meta()
     choices <- stats::setNames(meta$industry_code, paste0(meta$industry_description, " (", meta$industry_code, ")"))
     selected <- isolate(input$industry_code)
 
@@ -709,21 +810,72 @@ server <- function(input, output, session) {
     updateSelectizeInput(session, "industry_code", choices = choices, selected = selected, server = TRUE)
   }, ignoreNULL = FALSE)
 
+  region_selected_geoid <- reactive({
+    if (identical(input$Region_select, "MSA")) {
+      req(input$msa_selected)
+      input$msa_selected
+    } else {
+      req(input$state_selected)
+      input$state_selected
+    }
+  })
+
   region_selected_meta <- reactive({
-    req(input$region_geoid)
-    region_geo_meta() %>% filter(geoid == input$region_geoid) %>% slice(1)
+    active_geo_meta() %>%
+      filter(geoid == region_selected_geoid()) %>%
+      slice(1)
   })
 
   industry_selected_meta <- reactive({
     req(input$industry_code)
-    industry_meta_selected_level() %>% filter(industry_code == input$industry_code) %>% slice(1)
+    active_industry_meta() %>%
+      filter(industry_code == input$industry_code) %>%
+      slice(1)
+  })
+
+  industry_region_data <- reactive({
+    req(input$industry_code)
+
+    joined <- load_industry_regions(active_level(), input$industry_code) %>%
+      filter(geoid %in% active_geo_meta()$geoid) %>%
+      left_join(
+        active_geo_meta() %>%
+          select(
+            geoid,
+            geo_name = short_name,
+            display_name,
+            industrial_diversity,
+            economic_complexity_index,
+            strategic_index
+          ),
+        by = "geoid"
+      ) %>%
+      mutate(
+        geo_name = coalesce(geo_name, display_name, geoid)
+      )
+
+    if (isTRUE(input$industry_underdeveloped_only)) {
+      joined <- joined %>% filter(location_quotient < 1)
+    }
+
+    joined %>%
+      arrange(desc(.data[[input$industry_metric]]), desc(strategic_gain_percentile_score))
+  })
+
+  industry_region_map_data <- reactive({
+    metric_key <- input$industry_metric
+
+    industry_region_data() %>%
+      mutate(
+        metric_value = .data[[metric_key]],
+        metric_percentile = percent_rank(metric_value),
+        metric_rank = rank(desc(metric_value), ties.method = "first")
+      )
   })
 
   region_industry_data <- reactive({
-    req(input$region_geoid)
-
-    joined <- load_region_industries(input$region_level, input$region_geoid) %>%
-      left_join(region_industry_meta(), by = "industry_code")
+    joined <- load_region_industries(active_level(), region_selected_geoid()) %>%
+      left_join(active_industry_meta(), by = "industry_code")
 
     if (nzchar(trimws(input$region_industry_search))) {
       search_term <- tolower(trimws(input$region_industry_search))
@@ -742,55 +894,15 @@ server <- function(input, output, session) {
       arrange(desc(.data[[input$region_metric]]), desc(strategic_gain_percentile_score))
   })
 
-  industry_region_data <- reactive({
-    req(input$industry_code)
-
-    joined <- load_industry_regions(input$industry_level, input$industry_code) %>%
-      left_join(
-        industry_geo_meta() %>%
-          select(
-            geoid,
-            geo_name = name,
-            display_name,
-            industrial_diversity,
-            economic_complexity_index,
-            strategic_index
-          ),
-        by = "geoid"
-      ) %>%
-      mutate(geo_name = coalesce(display_name, geo_name, geoid))
-
-    if (isTRUE(input$industry_underdeveloped_only)) {
-      joined <- joined %>% filter(location_quotient < 1)
-    }
-
-    joined %>%
-      arrange(desc(.data[[input$industry_metric]]), desc(strategic_gain_percentile_score))
-  })
-
-  output$region_title_ui <- renderUI({
+  output$title_ui <- renderUI({
     selected <- region_selected_meta()
-    div(
-      class = "cgt-kicker",
-      tags$span(geo_level_titles[[input$region_level]]),
-      h2(selected$display_name),
-      tags$p(
-        class = "cgt-muted",
-        "Use the old Region View workflow to identify feasible and strategically valuable industries for this geography."
-      )
-    )
-  })
+    level_label <- if (identical(input$Region_select, "MSA")) "Metro Area" else "State"
 
-  output$industry_title_ui <- renderUI({
-    selected <- industry_selected_meta()
     div(
-      class = "cgt-kicker",
-      tags$span(geo_level_titles[[input$industry_level]]),
-      h2(selected$industry_description),
-      tags$p(
-        class = "cgt-muted",
-        glue("Compare where NAICS {selected$industry_code} looks most feasible under the current public dataset.")
-      )
+      class = "cgt-title-block",
+      tags$div(class = "cgt-kicker", tags$span(level_label)),
+      h2(class = "cgt-region-heading", selected$display_name),
+      tags$p(class = "cgt-muted", "Use the old Region View workflow to identify feasible and strategically valuable industries.")
     )
   })
 
@@ -823,71 +935,35 @@ server <- function(input, output, session) {
     tags$p(class = "cgt-value-note", glue("{sprintf('%.1f', selected$strategic_index_percentile)} percentile nationally."))
   })
 
-  output$industry_complexity_value <- renderUI({
-    selected <- industry_selected_meta()
-    tags$span(sprintf("%.2f", selected$industry_complexity))
-  })
-
-  output$industry_complexity_note <- renderUI({
-    tags$p(class = "cgt-value-note", "Higher values imply deeper and rarer capability requirements.")
-  })
-
-  output$industry_complexity_pct_value <- renderUI({
-    selected <- industry_selected_meta()
-    tags$span(sprintf("%.1f", selected$industry_complexity_percentile))
-  })
-
-  output$industry_complexity_pct_note <- renderUI({
-    tags$p(class = "cgt-value-note", "Percentile rank relative to other industries in this public snapshot.")
-  })
-
-  output$industry_share_value <- renderUI({
-    selected <- industry_selected_meta()
-    tags$span(percent(selected$industry_employment_share_nation, accuracy = 0.01))
-  })
-
-  output$industry_share_note <- renderUI({
-    tags$p(class = "cgt-value-note", "National employment share for the selected industry.")
-  })
-
-  output$industry_ubiquity_value <- renderUI({
-    selected <- industry_selected_meta()
-    tags$span(comma(selected$industry_ubiquity))
-  })
-
-  output$industry_ubiquity_note <- renderUI({
-    tags$p(class = "cgt-value-note", "Number of geographies where the industry is present.")
-  })
-
-  output$region_table <- renderReactable({
+  output$feasibility_table <- renderReactable({
     data <- region_industry_data()
     req(nrow(data) > 0)
 
     metric_key <- input$region_metric
     selected_label <- metric_label(metric_key, region_metric_choices)
 
-    table_data <- data %>%
-      mutate(
-        selected_metric = .data[[metric_key]]
-      ) %>%
-      transmute(
-        industry_description,
-        industry_code,
-        selected_metric,
-        industry_feasibility_percentile_score,
-        strategic_gain_percentile_score,
-        industry_feasibility,
-        strategic_gain,
-        location_quotient,
-        industry_employment_share,
-        industry_complexity,
-        industry_complexity_percentile
-      )
-
-    build_region_table(table_data, selected_label, metric_key)
+    build_region_table(
+      data %>%
+        mutate(selected_metric = .data[[metric_key]]) %>%
+        transmute(
+          industry_description,
+          industry_code,
+          selected_metric,
+          industry_feasibility_percentile_score,
+          strategic_gain_percentile_score,
+          industry_feasibility,
+          strategic_gain,
+          location_quotient,
+          industry_employment_share,
+          industry_complexity,
+          industry_complexity_percentile
+        ),
+      selected_label,
+      metric_key
+    )
   })
 
-  output$region_scatter_complexity <- renderPlotly({
+  output$scatter_complexity <- renderPlotly({
     data <- region_industry_data()
     req(nrow(data) > 0)
 
@@ -916,7 +992,7 @@ server <- function(input, output, session) {
       )
   })
 
-  output$region_scatter_strategic <- renderPlotly({
+  output$scatter_good_jobs <- renderPlotly({
     data <- region_industry_data()
     req(nrow(data) > 0)
 
@@ -946,28 +1022,26 @@ server <- function(input, output, session) {
   })
 
   output$region_top_feasible <- renderUI({
-    data <- region_industry_data() %>% arrange(desc(industry_feasibility_percentile_score))
     top_entries_card(
       "Top Feasible Industries",
       "Highest feasibility percentile scores under the current filters.",
-      data,
+      region_industry_data() %>% arrange(desc(industry_feasibility_percentile_score)),
       "industry_feasibility_percentile_score",
       "industry_description"
     )
   })
 
   output$region_top_strategic <- renderUI({
-    data <- region_industry_data() %>% arrange(desc(strategic_gain_percentile_score))
     top_entries_card(
       "Top Strategic Gain Industries",
-      "Industries with the strongest strategic upside for the selected geography.",
-      data,
+      "Industries with the strongest strategic upside for the selected region.",
+      region_industry_data() %>% arrange(desc(strategic_gain_percentile_score)),
       "strategic_gain_percentile_score",
       "industry_description"
     )
   })
 
-  output$region_analysis_copy <- renderUI({
+  output$industries_to_grow_analysis <- renderUI({
     data <- region_industry_data()
     req(nrow(data) > 0)
     top_feasible <- paste(head(data$industry_description[order(data$industry_feasibility_percentile_score, decreasing = TRUE)], 3), collapse = ", ")
@@ -980,169 +1054,199 @@ server <- function(input, output, session) {
         glue(
           "For {region_selected_meta()$display_name}, the strongest feasibility signals currently appear in {top_feasible}. The biggest strategic-gain opportunities are {top_strategic}."
         )
-      ),
-      tags$p(
-        "This interpretation uses the public 2026 dataset and is meant to preserve the older region-planning decision flow rather than reproduce every legacy workforce panel."
       )
     )
   })
 
-  output$industry_table <- renderReactable({
-    data <- industry_region_data()
+  output$title_ui_Business <- renderUI({
+    selected <- industry_selected_meta()
+
+    tags$div(
+      class = "cgt-map-summary",
+      tags$h5(selected$industry_description),
+      tags$p(class = "cgt-overlay-subtitle", paste0("NAICS ", selected$industry_code, " · ", if (identical(input$Region_select, "MSA")) "Metro Areas" else "States")),
+      tags$div(
+        class = "cgt-mini-stat-grid",
+        tags$div(class = "cgt-mini-stat", tags$span("Complexity"), tags$strong(sprintf("%.2f", selected$industry_complexity))),
+        tags$div(class = "cgt-mini-stat", tags$span("Complexity %ile"), tags$strong(sprintf("%.1f", selected$industry_complexity_percentile))),
+        tags$div(class = "cgt-mini-stat", tags$span("Nat. emp. share"), tags$strong(percent(selected$industry_employment_share_nation, accuracy = 0.01))),
+        tags$div(class = "cgt-mini-stat", tags$span("Ubiquity"), tags$strong(comma(selected$industry_ubiquity)))
+      )
+    )
+  })
+
+  output$title_ui_Business_table <- renderUI({
+    selected <- industry_selected_meta()
+    tags$div(
+      class = "cgt-table-title",
+      tags$h5(selected$industry_description),
+      tags$p(class = "cgt-muted", paste0("NAICS ", selected$industry_code, " ranked across ", if (identical(input$Region_select, "MSA")) "metro areas" else "states", "."))
+    )
+  })
+
+  output$map_legend <- renderUI({
+    build_percentile_legend(paste("Percentile", metric_label(input$industry_metric, industry_metric_choices)))
+  })
+
+  output$Maps <- renderLeaflet({
+    map_data <- industry_region_map_data()
+    req(nrow(map_data) > 0)
+
+    pal <- colorNumeric(
+      palette = c("#8c510a", "#e8cd94", "#f5f7ea", "#93cfc8", "#01665e"),
+      domain = seq(0, 1, by = 0.1),
+      reverse = FALSE,
+      na.color = "#dfe7ec"
+    )
+
+    shape <- get_shape_data(active_level()) %>%
+      inner_join(
+        map_data %>%
+          transmute(
+            geoid,
+            geo_name,
+            metric_value,
+            metric_percentile,
+            metric_rank,
+            industry_feasibility_percentile_score,
+            strategic_gain_percentile_score,
+          location_quotient
+          ),
+        by = "geoid"
+      ) %>%
+      sf::st_transform(4326)
+    shape_sp <- methods::as(shape, "Spatial")
+
+    labels <- sprintf(
+      "%s\n%s percentile: %s\n%s: %s",
+      shape$geo_name,
+      metric_label(input$industry_metric, industry_metric_choices),
+      round(shape$metric_percentile * 100, 0),
+      metric_label(input$industry_metric, industry_metric_choices),
+      format_metric_value(shape$metric_value, input$industry_metric)
+    )
+
+    leaflet(options = leafletOptions(zoomControl = TRUE)) %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
+      add_polygons_direct(
+        data = shape_sp,
+        stroke = TRUE,
+        fillOpacity = 0.8,
+        smoothFactor = 0.9,
+        color = "#5e9fb0",
+        opacity = 0.15,
+        fillColor = pal(shape_sp@data$metric_percentile),
+        layerId = shape_sp@data$geoid,
+        label = labels,
+        labelOptions = labelOptions(
+          style = list("font-weight" = "normal", padding = "3px 8px"),
+          textsize = "15px",
+          direction = "auto"
+        )
+      ) %>%
+      setView(lng = -98.583333, lat = 39.833333, zoom = 5)
+  })
+
+  observeEvent(list(input$industry_code, input$industry_metric, input$Region_select), {
+    output$ver <- renderUI({ NULL })
+  }, ignoreInit = FALSE)
+
+  observeEvent(input$Maps_shape_click, {
+    selected_row <- industry_region_map_data() %>%
+      filter(geoid == input$Maps_shape_click$id) %>%
+      slice(1)
+
+    req(nrow(selected_row) == 1)
+
+    output$ver <- renderUI({
+      card(
+        class = "cgt-card",
+        card_header("Zoom-in"),
+        h5(selected_row$geo_name),
+        h6(
+          paste0(
+            "Placed at rank ",
+            selected_row$metric_rank,
+            " out of ",
+            nrow(industry_region_map_data()),
+            " by ",
+            metric_label(input$industry_metric, industry_metric_choices),
+            " for ",
+            industry_selected_meta()$industry_description
+          )
+        ),
+        reactableOutput("selected_city_stats_map"),
+        actionLink("Close", "Close")
+      )
+    })
+
+    output$selected_city_stats_map <- renderReactable({
+      reactable(
+        tibble::tibble(
+          Metric = c(
+            metric_label(input$industry_metric, industry_metric_choices),
+            "Feasibility percentile",
+            "Strategic gain percentile",
+            "Location quotient"
+          ),
+          Value = c(
+            format_metric_value(selected_row$metric_value, input$industry_metric),
+            sprintf("%.1f", selected_row$industry_feasibility_percentile_score),
+            sprintf("%.1f", selected_row$strategic_gain_percentile_score),
+            sprintf("%.2f", selected_row$location_quotient)
+          )
+        ),
+        pagination = FALSE,
+        bordered = FALSE,
+        compact = TRUE
+      )
+    })
+  })
+
+  observeEvent(input$Close, {
+    output$ver <- renderUI({ NULL })
+  })
+
+  output$Table_Map <- renderReactable({
+    data <- industry_region_map_data()
     req(nrow(data) > 0)
 
     metric_key <- input$industry_metric
     selected_label <- metric_label(metric_key, industry_metric_choices)
 
-    table_data <- data %>%
-      mutate(
-        selected_metric = .data[[metric_key]]
-      ) %>%
-      transmute(
-        geo_name,
-        selected_metric,
-        industry_feasibility_percentile_score,
-        strategic_gain_percentile_score,
-        industry_feasibility,
-        strategic_gain,
-        location_quotient,
-        industry_employment_share,
-        economic_complexity_index,
-        industrial_diversity,
-        strategic_index
-      )
-
-    build_industry_table(table_data, selected_label, metric_key)
-  })
-
-  output$industry_map_ui <- renderUI({
-    if (!input$industry_level %in% c("state", "county")) {
-      return(
-        card(
-          class = "cgt-card cgt-map-fallback",
-          card_header("Structured Geography Comparison"),
-          tags$p(
-            class = "cgt-muted",
-            "The public bundle does not currently include geometry for this geography level, so the old map slot falls back to a ranked comparison panel."
-          ),
-          reactableOutput("industry_map_fallback", height = "620px")
-        )
-      )
-    }
-
-    leafletOutput("industry_map", height = "700px")
-  })
-
-  output$industry_map_fallback <- renderReactable({
-    data <- industry_region_data() %>% slice_head(n = 25)
-    req(nrow(data) > 0)
-
-    reactable(
+    build_industry_table(
       data %>%
         transmute(
-          Geography = geo_name,
-          Metric = format_metric_value(.data[[input$industry_metric]], input$industry_metric),
-          `Strategic gain %ile` = sprintf("%.1f", strategic_gain_percentile_score),
-          `LQ` = sprintf("%.2f", location_quotient),
-          `ECI` = sprintf("%.2f", economic_complexity_index)
+          geo_name,
+          selected_metric = metric_value,
+          industry_feasibility_percentile_score,
+          strategic_gain_percentile_score,
+          industry_feasibility,
+          strategic_gain,
+          location_quotient,
+          industry_employment_share,
+          economic_complexity_index,
+          industrial_diversity,
+          strategic_index
         ),
-      compact = TRUE,
-      striped = TRUE,
-      bordered = FALSE,
-      pagination = FALSE
+      selected_label,
+      metric_key
     )
   })
 
-  output$industry_map <- renderLeaflet({
-    req(input$industry_level %in% c("state", "county"))
-
-    data <- industry_region_data()
+  output$Region_to_grow_analysis <- renderUI({
+    data <- industry_region_map_data()
     req(nrow(data) > 0)
 
-    shape <- get_shape_data(input$industry_level)
-    metric_key <- input$industry_metric
-    palette_domain <- data[[metric_key]]
-    pal <- colorNumeric(
-      palette = c("#d9eef1", "#7bcfd4", "#003b63"),
-      domain = palette_domain,
-      na.color = "#e5ebf0"
-    )
-
-    map_data <- shape %>%
-      left_join(
-        data %>%
-          transmute(
-            geoid,
-            geo_name,
-            metric_value = .data[[metric_key]],
-            industry_feasibility_percentile_score,
-            strategic_gain_percentile_score,
-            location_quotient
-          ),
-        by = "geoid"
-      )
-
-    labels <- sprintf(
-      "<strong>%s</strong><br/>%s: %s<br/>Feasibility percentile: %s<br/>Strategic gain percentile: %s<br/>Location quotient: %s",
-      coalesce(map_data$geo_name, map_data$geoid),
-      metric_palette_label(metric_key),
-      vapply(map_data$metric_value, format_metric_value, character(1), metric_key = metric_key),
-      sprintf("%.1f", map_data$industry_feasibility_percentile_score),
-      sprintf("%.1f", map_data$strategic_gain_percentile_score),
-      sprintf("%.2f", map_data$location_quotient)
-    )
-
-    leaflet(map_data, options = leafletOptions(zoomControl = TRUE, minZoom = 3)) %>%
-      addProviderTiles(providers$CartoDB.PositronNoLabels) %>%
-      addPolygons(
-        fillColor = ~pal(metric_value),
-        fillOpacity = 0.85,
-        color = "#ffffff",
-        weight = 0.4,
-        opacity = 1,
-        smoothFactor = 0.2,
-        label = lapply(labels, HTML),
-        highlightOptions = highlightOptions(weight = 1.5, color = "#0f1720", bringToFront = TRUE)
-      ) %>%
-      addLegend(
-        "bottomright",
-        pal = pal,
-        values = palette_domain,
-        opacity = 0.9,
-        title = metric_palette_label(metric_key)
-      )
-  })
-
-  output$industry_map_side <- renderUI({
-    data <- industry_region_data()
-    req(nrow(data) > 0)
-
-    top_metric <- head(data %>% arrange(desc(.data[[input$industry_metric]])), 5)
-    top_entries_card(
-      "Leading Geographies",
-      glue("Ranked by {metric_label(input$industry_metric, industry_metric_choices)}."),
-      top_metric,
-      input$industry_metric,
-      "geo_name"
-    )
-  })
-
-  output$industry_analysis_copy <- renderUI({
-    data <- industry_region_data()
-    req(nrow(data) > 0)
-
-    top_places <- paste(head(data$geo_name, 3), collapse = ", ")
+    top_places <- paste(head(data$geo_name[order(data$metric_rank)], 3), collapse = ", ")
 
     card(
       class = "cgt-card industries_to_grow_analysis-1",
       card_header("Industry View Readout"),
       tags$p(
         glue(
-          "{industry_selected_meta()$industry_description} currently looks strongest in {top_places} under the selected geography level and filters."
+          "{industry_selected_meta()$industry_description} currently looks strongest in {top_places} under the {if (identical(input$Region_select, 'MSA')) 'metro-area' else 'state'} view."
         )
-      ),
-      tags$p(
-        "Use the ranking metric to switch between feasibility, strategic upside, and present-day concentration depending on the kind of market-entry question your team is asking."
       )
     )
   })

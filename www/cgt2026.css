@@ -1,10 +1,10 @@
 body {
   font-family: 'Roboto', sans-serif;
-  background: linear-gradient(180deg, #f5f8fb 0%, #ffffff 22%);
+  background: #ffffff;
 }
 
 .navbar {
-  box-shadow: 0 14px 40px rgba(0, 28, 48, 0.14);
+  box-shadow: none;
 }
 
 .cgt-page {
@@ -70,9 +70,9 @@ body {
 .cgt-sidebar-note {
   margin-top: 18px;
   padding: 14px 15px;
-  border: 1px solid #d9e5eb;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #f8fbfc 0%, #edf4f7 100%);
+  border: 1px solid #d5dde3;
+  border-radius: 6px;
+  background: #ecf1f4;
 }
 
 .cgt-sidebar-note p {
@@ -82,22 +82,23 @@ body {
 }
 
 .cgt-card {
-  border: 1px solid #dbe6ed;
-  border-radius: 16px;
-  box-shadow: 0 10px 26px rgba(19, 47, 69, 0.07);
+  border: 1px solid #d5dde3;
+  border-radius: 6px;
+  box-shadow: none;
 }
 
 .cgt-card .card-header {
-  border-bottom: 1px solid #e6eef2;
-  background: linear-gradient(180deg, #f9fbfc 0%, #f1f6f9 100%);
+  border-bottom: 1px solid #dfe5ea;
+  background: #ffffff;
   color: #08243a;
-  font-family: 'Inter', sans-serif;
   font-weight: 700;
 }
 
 .cgt-value-box {
-  border-radius: 18px;
-  box-shadow: 0 14px 34px rgba(16, 40, 61, 0.08);
+  border-radius: 6px;
+  border: 1px solid #b8c4ce;
+  box-shadow: none;
+  background: #ecf1f4 !important;
 }
 
 .cgt-value-box .value-box-area {
@@ -106,14 +107,12 @@ body {
 
 .cgt-value-box .value-box-title {
   color: #173b56;
-  font-family: 'Inter', sans-serif;
   font-size: 14px;
   font-weight: 700;
 }
 
 .cgt-value-box .value-box-value {
   color: #09283f;
-  font-family: 'Inter', sans-serif;
   font-size: 34px;
   font-weight: 800;
   line-height: 1;
@@ -166,30 +165,120 @@ body {
   min-height: 700px;
 }
 
+.cgt-map-stage {
+  position: relative;
+}
+
+.cgt-overlay-panel {
+  border: 1px solid #cfd8df;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: none;
+}
+
+.cgt-click-panel {
+  min-height: 0;
+}
+
+.cgt-map-summary h5 {
+  margin: 0 0 6px;
+  color: #08243a;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.cgt-overlay-subtitle {
+  margin: 0 0 12px;
+  color: #587085;
+  font-size: 13px;
+}
+
+.cgt-mini-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.cgt-mini-stat {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #ecf1f4;
+}
+
+.cgt-mini-stat span {
+  display: block;
+  margin-bottom: 4px;
+  color: #4e6679;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.cgt-mini-stat strong {
+  color: #08243a;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.cgt-legend-card {
+  padding: 12px 14px;
+  border: 1px solid #cfd8df;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: none;
+}
+
+.cgt-legend-bar {
+  height: 14px;
+  margin: 8px 0 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #8c510a 0%, #e8cd94 25%, #f5f7ea 50%, #93cfc8 75%, #01665e 100%);
+}
+
+.cgt-legend-labels {
+  display: flex;
+  justify-content: space-between;
+  color: #5d7284;
+  font-size: 12px;
+}
+
+.cgt-table-title h5 {
+  margin-bottom: 4px;
+  color: #08243a;
+}
+
+.cgt-region-heading {
+  margin: 0 0 8px;
+  color: #09283f;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.05;
+}
+
 .cgt-about-image {
   display: block;
   max-width: 100%;
   margin: 16px 0 24px;
-  border-radius: 12px;
-  box-shadow: 0 12px 30px rgba(12, 34, 49, 0.1);
+  border-radius: 6px;
+  box-shadow: none;
 }
 
 .leaflet-container {
-  border: 1px solid #dbe6ed;
-  border-radius: 16px;
+  border: 1px solid #d5dde3;
+  border-radius: 6px;
 }
 
 .reactable {
-  border: 1px solid #dbe6ed;
-  border-radius: 16px;
+  border: 1px solid #d5dde3;
+  border-radius: 6px;
   overflow: hidden;
-  box-shadow: 0 10px 26px rgba(19, 47, 69, 0.07);
+  box-shadow: none;
 }
 
 .rt-table .rt-th {
   background: #eef4f7;
   color: #15364f;
-  font-family: 'Inter', sans-serif;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -198,6 +287,30 @@ body {
 
 .rt-table .rt-td {
   color: #15364f;
+}
+
+.radio-group-buttons .btn-group-container-sw {
+  width: 248px !important;
+  margin-right: 26px;
+}
+
+.radio-group-buttons .btn-group-container-sw .btn {
+  min-width: 118px;
+  padding: 6px 14px;
+  border-radius: 4px !important;
+  border-color: #1d71ea;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.radio-group-buttons .btn-group-container-sw .btn-check + .btn {
+  background: transparent;
+}
+
+.radio-group-buttons .btn-group-container-sw .btn-check:checked + .btn {
+  background: #1d71ea;
+  color: #ffffff;
 }
 
 @media (max-width: 991px) {

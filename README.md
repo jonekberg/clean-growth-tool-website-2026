@@ -1,6 +1,6 @@
 # Clean Growth Tool Website 2026
 
-This repository now hosts an `R Shiny` rebuild of the Clean Growth Tool that keeps the older interface shell while swapping in the newer public data snapshot from [`bsf-rmi/RMI_Clean_Growth_Tool`](https://github.com/bsf-rmi/RMI_Clean_Growth_Tool).
+This repository now hosts an `R Shiny` rebuild of the Clean Growth Tool that follows the older UI pattern while swapping in the newer public data snapshot from [`bsf-rmi/RMI_Clean_Growth_Tool`](https://github.com/bsf-rmi/RMI_Clean_Growth_Tool).
 
 ## Current app
 
@@ -11,7 +11,8 @@ This repository now hosts an `R Shiny` rebuild of the Clean Growth Tool that kee
 What this Shiny build does:
 
 - Preserves the older `Region View`, `Industry View`, and `About` structure.
-- Uses the newer public geography model: `County`, `State`, `CBSA`, `CSA`, and `Commuting Zone`.
+- Focuses the legacy UI around `MSA` and `State` only.
+- Uses a legacy-style full-US choropleth in `Industry View` for both metro areas and states.
 - Replaces unsupported legacy workforce and investment panels with public-data-backed metrics:
   - `Economic Complexity Index`
   - `Industrial Diversity`
@@ -19,8 +20,14 @@ What this Shiny build does:
   - `Feasibility`
   - `Strategic Gain`
 - Keeps the old `Map / Table` pattern in `Industry View`.
-  - Real choropleths are available for `State` and `County`.
-  - `CBSA`, `CSA`, and `CZ` currently fall back to a structured ranked panel because matching public geometry is not bundled in the upstream snapshot.
+- Uses locally vendored Census TIGER/Line geometry under [`geometry/`](/Users/jon.ekberg/code/clean-growth-tool-website-2026/geometry) for:
+  - `MSA`
+  - `State`
+
+Current scope limitations:
+
+- `Economic Areas` are not included because the newer public snapshot does not expose an equivalent dataset.
+- `CSA`, `CZ`, `County`, and the previous static-site implementation are no longer part of the active Shiny workflow.
 
 ## Run locally
 
@@ -54,8 +61,9 @@ That script refreshes:
 - `public/data/meta`
 - `public/data/by_geography`
 - `public/data/by_industry`
-- `public/data/topology`
 - `public/data/branding`
+
+The current app also depends on locally stored metro/state geometry in [`geometry/`](/Users/jon.ekberg/code/clean-growth-tool-website-2026/geometry).
 
 ## Deployment note
 
