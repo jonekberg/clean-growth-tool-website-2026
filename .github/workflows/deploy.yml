@@ -1,4 +1,4 @@
-name: Deploy GitHub Pages
+name: Shiny Deployment Note
 
 on:
   push:
@@ -6,39 +6,12 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: github-pages
-  cancel-in-progress: true
-
 jobs:
-  build:
+  deployment-note:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true
-      - run: npm ci
-      - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Explain deployment change
+        run: |
+          echo "The active implementation in this repository is now an R Shiny app."
+          echo "GitHub Pages deployment has been retired because Pages cannot host a running Shiny process."
+          echo "Use a Shiny-capable host such as shinyapps.io, Posit Connect, or a container-based R runtime."
